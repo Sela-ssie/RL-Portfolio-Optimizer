@@ -72,6 +72,7 @@ class PortfolioEnv(gym.Env):
         return self._get_observation(), reward, done, False, {
             "portfolio_value": self.portfolio_value,
             "weights": self.weights,
+            "turnover": turnover
         }
 
     def _get_observation(self):
@@ -86,10 +87,3 @@ class PortfolioEnv(gym.Env):
         action = np.clip(action, 0.0, 1.0)
         weights = action / (np.sum(action) + 1e-8)
         return weights
-    
-
-env = PortfolioEnv(returns=np.random.randn(1000, 5))
-obs = env.reset()
-print(obs)
-action = env.action_space.sample()
-print(env.step(action))
