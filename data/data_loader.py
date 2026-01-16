@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import requests
 import yfinance as yf
 
 
@@ -60,3 +61,53 @@ def prepare_data(tickers, start="2015-01-01", end="2024-01-01", train_ratio=0.7)
     test_returns  = (test_returns - mean) / std
 
     return train_returns, test_returns, mean, std
+
+def get_sp500_tickers() -> list[str]:
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    tables = pd.read_html(resp.text)
+    df = tables[0]
+
+    tickers = df["Symbol"].astype(str).tolist()
+    # Yahoo uses '-' instead of '.' for class shares
+    tickers = [t.replace(".", "-") for t in tickers]
+    return tickers
+
+
+def load_price_data_batched(
+    tickers: list[str],
+    start="2015-01-01",
+    end="2024-01-01",
+    batch_size: int = 80,
+):
+    """
+    Download adjusted close prices in batches to reduce Yahoo failures.
+    Returns a DataFrame: index=Date, columns=tickers.
+    """
+    all_prices = []
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i + batch_size]
+        data = yf.download(
+            batch,
+            start=start,
+            end=end,
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+        )
+        prices = data["Close"]
+        all_prices.append(prices)
+
+    prices = pd.concat(all_prices, axis=1)
+    prices = prices.loc[:, ~prices.columns.duplicated()]  # just in case
+    return prices
