@@ -19,6 +19,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from data.data_loader import load_price_data, prices_to_log_returns, get_sp500_tickers, load_price_data_batched
+from evaluation.metrics import summary_metrics, print_metrics_table
 
 
 # -----------------------------
@@ -78,14 +79,8 @@ def simulate_rebalance_strategy(
     rebalance_every: int = 21,
     transaction_cost: float = 0.001,
     initial_value: float = 1.0,
+    return_turnover: bool = False,
 ):
-    """
-    Realistic rebalance:
-    - Start at target_weights
-    - Each day: portfolio gets returns; weights drift
-    - On rebalance dates: trade back to target and pay turnover cost
-    - Wealth update uses exp(log_return - cost)
-    """
     r = returns.values  # (T, N) log returns
     T, N = r.shape
 
@@ -97,21 +92,28 @@ def simulate_rebalance_strategy(
     values = np.empty(T + 1, dtype=np.float64)
     values[0] = float(initial_value)
 
+    turnovers = np.zeros(T, dtype=np.float64)  # turnover per step
+
     for t in range(T):
-        # Rebalance BEFORE realizing return at time t (typical convention)
+        # rebalance BEFORE return realization
         if rebalance_every > 0 and (t % rebalance_every == 0) and (t != 0):
-            turnover = np.sum(np.abs(target - w))
+            turnover = float(np.sum(np.abs(target - w)))
             cost = transaction_cost * turnover
             w = target.copy()
         else:
+            turnover = 0.0
             cost = 0.0
+
+        turnovers[t] = turnover
 
         port_log_ret = float(np.dot(w, r[t]))
         values[t + 1] = values[t] * np.exp(port_log_ret - cost)
 
-        # After the market move, weights drift (no trading during the day)
+        # drift after the market move
         w = drift_weights(w, r[t])
 
+    if return_turnover:
+        return values, turnovers
     return values
 
 
@@ -185,7 +187,6 @@ if __name__ == "__main__":
     tc = 0.001
 
     # --- Load S&P 500 universe ---
-    from data.data_loader import get_sp500_tickers, load_price_data_batched
 
     tickers = get_sp500_tickers()
     print("Total SP500 tickers:", len(tickers))
@@ -213,14 +214,6 @@ if __name__ == "__main__":
         returns_aligned, init_weights=target, initial_value=1.0
     )
 
-    ew_m_vals = simulate_rebalance_strategy(
-        returns_aligned,
-        target_weights=target,
-        rebalance_every=21,
-        transaction_cost=tc,
-        initial_value=1.0,
-    )
-
     spy_vals = simulate_buy_and_hold(
         spy_aligned,
         init_weights=np.array([1.0]),
@@ -229,12 +222,25 @@ if __name__ == "__main__":
 
     best_ticker, best_vals = compute_best_single_asset(returns_aligned)
 
+    
+    # Monthly rebalance
+
+    ew_m_vals, ew_m_turnover = simulate_rebalance_strategy(
+        returns_aligned,
+        target_weights=target,
+        rebalance_every=21,
+        transaction_cost=tc,
+        initial_value=1.0,
+        return_turnover=True,
+    )
+
     # --- Print results ---
     print("\n=== Baseline Results (SP500 Universe) ===")
     print("EW Buy & Hold (true) final:", ew_bh_vals[-1])
     print("EW Monthly Rebalance final:", ew_m_vals[-1])
     print("SPY Buy & Hold final:", spy_vals[-1])
     print(f"Best Single Asset ({best_ticker}) final:", best_vals[-1])
+
 
     # --- Plot ---
     plot_baselines(
@@ -246,3 +252,14 @@ if __name__ == "__main__":
         },
         title="Baseline Portfolio Value Curves (S&P 500 Universe)",
     )
+
+    # Build metric summaries
+    metrics = {
+        "EW Buy&Hold (true)": summary_metrics(ew_bh_vals),
+        "EW Monthly Rebal": summary_metrics(ew_m_vals, turnover=ew_m_turnover),
+        "SPY Buy&Hold": summary_metrics(spy_vals),
+        f"Best Single ({best_ticker})": summary_metrics(best_vals),
+    }
+
+    print("\n=== Metrics (annualized, 252 trading days) ===")
+    print_metrics_table(metrics)
