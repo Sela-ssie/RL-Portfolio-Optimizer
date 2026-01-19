@@ -103,13 +103,20 @@ def main():
 
     # --- Environment sanity check with random policy ---
 
+    # raw_returns: DataFrame of true log returns
+    # train_returns: DataFrame of normalized returns from prepare_data()
+
+    raw_train = raw_returns.loc[train_returns.index]  # align dates
+
     env = PortfolioEnv(
-        returns=train_returns.values if isinstance(train_returns, pd.DataFrame) else np.asarray(train_returns),
+        returns_raw=raw_train.values,
+        returns_obs=train_returns.values,
         lookback_window_size=30,
         transaction_cost=0.001,
         initial_value=1.0,
+        turnover_penalty=0.0,
+        drawdown_penalty=0.0,
     )
-
     print("=== Environment ===")
     print("action_space:", env.action_space)
     print("observation_space:", env.observation_space)

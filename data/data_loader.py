@@ -17,7 +17,8 @@ def load_price_data(tickers, start="2015-01-01", end="2024-01-01"):
     )
 
     prices = data["Close"]
-
+    if isinstance(prices, pd.Series):
+        prices = prices.to_frame(name=tickers[0])
     return prices
 
 
@@ -32,12 +33,7 @@ def prices_to_log_returns(prices: pd.DataFrame):
 
 def train_test_split(returns, train_ratio=0.7):
     split = int(len(returns) * train_ratio)
-    return returns[:split], returns[split:]
-
-def normalize_returns(returns):
-    mean = returns.mean(axis=0)
-    std = returns.std(axis=0) + 1e-8
-    return (returns - mean) / std
+    return returns.iloc[:split], returns.iloc[split:]
 
 def prepare_data(tickers, start="2015-01-01", end="2024-01-01", train_ratio=0.7):
     # Load prices
@@ -106,6 +102,8 @@ def load_price_data_batched(
             threads=True,
         )
         prices = data["Close"]
+        if isinstance(prices, pd.Series):
+            prices = prices.to_frame(name=tickers[0])
         all_prices.append(prices)
 
     prices = pd.concat(all_prices, axis=1)

@@ -10,40 +10,38 @@ class PortfolioEnv(gym.Env):
 
     def __init__(
         self,
-        returns: np.ndarray,
+        returns_raw: np.ndarray,
+        returns_obs: np.ndarray | None = None,
         lookback_window_size: int = 30,
         transaction_cost: float = 0.001,
         initial_value: float = 1.0,
         turnover_penalty: float = 0.0,
         drawdown_penalty: float = 0.0,
     ):
-        super(PortfolioEnv, self).__init__()
+        super().__init__()
 
-        self.num_assets = returns.shape[1]
+        self.num_assets = returns_raw.shape[1]
         self.initial_value = initial_value
-        self.returns = returns
+
+        # Raw returns drive portfolio dynamics + reward
+        self.returns_raw = np.asarray(returns_raw, dtype=np.float64)
+
+        # Observation returns drive the state seen by the agent (often normalized)
+        if returns_obs is None:
+            self.returns_obs = self.returns_raw
+        else:
+            self.returns_obs = np.asarray(returns_obs, dtype=np.float64)
+
+        # Basic sanity check: must align in time and assets
+        if self.returns_obs.shape != self.returns_raw.shape:
+            raise ValueError(
+                f"returns_obs shape {self.returns_obs.shape} must match returns_raw shape {self.returns_raw.shape}"
+            )
+
         self.lookback_window_size = lookback_window_size
         self.transaction_cost = transaction_cost
         self.turnover_penalty = float(turnover_penalty)
         self.drawdown_penalty = float(drawdown_penalty)
-
-
-        # Action space: allocation percentages for each asset
-        self.action_space = spaces.Box(
-            low=0.0,
-            high=1.0,
-            shape=(self.num_assets,),
-            dtype=np.float32
-        )
-
-        # Observation: rolling window of asset returns + current portfolio weights
-        obs_dim = self.lookback_window_size * self.num_assets + self.num_assets
-        self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(obs_dim,),
-            dtype=np.float32
-        )
 
     def reset(self, seed=None, options=None):
         if seed is not None:
@@ -68,7 +66,7 @@ class PortfolioEnv(gym.Env):
         tx_cost = turnover * self.transaction_cost
 
         # Portfolio log return at time t
-        asset_returns = self.returns[self.t]
+        asset_returns = self.returns_raw[self.t]
         portfolio_log_return = float(np.dot(self.weights, asset_returns))
 
         # Update portfolio value
@@ -89,7 +87,7 @@ class PortfolioEnv(gym.Env):
         )
 
         self.t += 1
-        done = self.t >= len(self.returns) - 1
+        done = self.t >= len(self.returns_raw) - 1
 
         return self._get_observation(), reward, done, False, {
             "portfolio_value": float(self.portfolio_value),
@@ -102,7 +100,7 @@ class PortfolioEnv(gym.Env):
         }
 
     def _get_observation(self):
-        returns_window = self.returns[self.t - self.lookback_window_size : self.t]
+        returns_window = self.returns_obs[self.t - self.lookback_window_size : self.t]
         obs = np.concatenate(
             [returns_window.flatten(), self.weights],
             axis=0

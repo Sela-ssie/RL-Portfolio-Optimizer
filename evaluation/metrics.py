@@ -41,7 +41,7 @@ def sharpe_ratio(
     excess = log_returns - rf_per_period
 
     denom = excess.std(ddof=1)
-    if denom == 0:
+    if denom < 1e-12:
         return np.nan
     return excess.mean() / denom * np.sqrt(periods_per_year)
 
