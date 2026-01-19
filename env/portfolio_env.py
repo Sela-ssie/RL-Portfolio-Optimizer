@@ -44,12 +44,11 @@ class PortfolioEnv(gym.Env):
         self.drawdown_penalty = float(drawdown_penalty)
 
     def reset(self, seed=None, options=None):
-        if seed is not None:
-            np.random.seed(seed)
+        super().reset(seed=seed)
 
         self.t = self.lookback_window_size
         self.portfolio_value = self.initial_value
-        self.weights = np.ones(self.num_assets) / self.num_assets
+        self.weights = np.ones(self.num_assets, dtype=np.float64) / self.num_assets
         self.peak_value = float(self.portfolio_value)
         self.prev_drawdown = 0.0
 
