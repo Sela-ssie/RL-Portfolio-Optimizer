@@ -55,7 +55,8 @@ class PortfolioEnv(gym.Env):
         return self._get_observation(), {}
     
     def step(self, action):
-        assert action.shape == (self.num_assets,)
+        action = np.asarray(action, dtype=np.float32).reshape(-1)
+        assert action.shape[0] == self.num_assets
         prev_weights = self.weights.copy()
 
         self.weights = self._action_to_weights(action)
