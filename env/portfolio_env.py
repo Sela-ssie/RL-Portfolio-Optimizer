@@ -17,11 +17,13 @@ class PortfolioEnv(gym.Env):
         initial_value: float = 1.0,
         turnover_penalty: float = 0.0,
         drawdown_penalty: float = 0.0,
+        random_start: bool = False,
     ):
         super().__init__()
 
         self.num_assets = returns_raw.shape[1]
         self.initial_value = initial_value
+        self.random_start = random_start
 
         # Raw returns drive portfolio dynamics + reward
         self.returns_raw = np.asarray(returns_raw, dtype=np.float64)
@@ -42,6 +44,22 @@ class PortfolioEnv(gym.Env):
         self.transaction_cost = transaction_cost
         self.turnover_penalty = float(turnover_penalty)
         self.drawdown_penalty = float(drawdown_penalty)
+        # Action space: allocation percentages for each asset
+        self.action_space = spaces.Box(
+            low=0.0,
+            high=1.0,
+            shape=(self.num_assets,),
+            dtype=np.float32
+        )
+
+        # Observation: rolling window of returns + current portfolio weights
+        obs_dim = self.lookback_window_size * self.num_assets + self.num_assets
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(obs_dim,),
+            dtype=np.float32
+        )
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
