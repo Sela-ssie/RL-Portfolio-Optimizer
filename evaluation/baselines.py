@@ -40,6 +40,164 @@ def drift_weights(prev_w: np.ndarray, asset_log_returns_t: np.ndarray) -> np.nda
     unnorm = prev_w * gross                           # proportional to post-move asset values
     return unnorm / (unnorm.sum() + 1e-12)            # normalize to sum to 1
 
+# -----------------------------
+# Long/Short helpers + simulators (market-neutral)
+# -----------------------------
+def _normalize_simplex(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float64)
+    s = float(x.sum())
+    if s <= 0:
+        return np.ones_like(x) / len(x)
+    return x / (s + eps)
+
+
+def _ls_from_scores(scores: np.ndarray, k_frac: float = 0.1) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build long/short books from cross-sectional scores.
+    Long: top k%, Short: bottom k%
+    Returns w_long, w_short (each simplex weights sum to 1).
+    """
+    scores = np.asarray(scores, dtype=np.float64)
+    N = scores.shape[0]
+    k = max(1, int(k_frac * N))
+
+    order = np.argsort(scores)
+    short_idx = order[:k]
+    long_idx = order[-k:]
+
+    w_long = np.zeros(N, dtype=np.float64)
+    w_short = np.zeros(N, dtype=np.float64)
+
+    w_long[long_idx] = 1.0
+    w_short[short_idx] = 1.0
+
+    w_long = _normalize_simplex(w_long)
+    w_short = _normalize_simplex(w_short)
+    return w_long, w_short
+
+
+def simulate_ls_rebalance_strategy(
+    returns: pd.DataFrame,
+    w_long_target: np.ndarray,
+    w_short_target: np.ndarray,
+    rebalance_every: int = 21,
+    transaction_cost: float = 0.001,
+    initial_value: float = 1.0,
+    return_turnover: bool = False,
+):
+    """
+    Market-neutral long/short strategy with fixed targets (rebalanced periodically).
+    Portfolio exposure: w = 0.5*w_long - 0.5*w_short
+    Turnover: sum(|Δw_long|)+sum(|Δw_short|) at rebalance times.
+    """
+    r = returns.values  # (T, N) log returns
+    T, N = r.shape
+
+    wL_tgt = _normalize_simplex(w_long_target)
+    wS_tgt = _normalize_simplex(w_short_target)
+
+    wL = wL_tgt.copy()
+    wS = wS_tgt.copy()
+
+    values = np.empty(T + 1, dtype=np.float64)
+    values[0] = float(initial_value)
+
+    turnovers = np.zeros(T, dtype=np.float64)
+
+    for t in range(T):
+        # Rebalance BEFORE return realization
+        if rebalance_every > 0 and (t % rebalance_every == 0) and (t != 0):
+            turnover = float(np.sum(np.abs(wL_tgt - wL)) + np.sum(np.abs(wS_tgt - wS)))
+            wL = wL_tgt.copy()
+            wS = wS_tgt.copy()
+        else:
+            turnover = 0.0
+
+        turnovers[t] = turnover
+        cost = transaction_cost * turnover
+
+        # Signed exposure (fixed gross=1, net≈0)
+        w = 0.5 * wL - 0.5 * wS
+
+        port_log_ret = float(np.dot(w, r[t]))
+        values[t + 1] = values[t] * np.exp(port_log_ret - cost)
+
+        # Keep books fixed between rebalances (simplest + consistent with "rebalance strategy")
+        # (No drift inside each book)
+        # If you *want* drift, you need to model holding shares; start simple first.
+
+    if return_turnover:
+        return values, turnovers
+    return values
+
+def simulate_ls_buy_and_hold(
+    returns: pd.DataFrame,
+    w_long_init: np.ndarray,
+    w_short_init: np.ndarray,
+    initial_value: float = 1.0,
+):
+    r = returns.values
+    T, N = r.shape
+
+    wL = _normalize_simplex(w_long_init)
+    wS = _normalize_simplex(w_short_init)
+
+    values = np.empty(T + 1, dtype=np.float64)
+    values[0] = float(initial_value)
+
+    for t in range(T):
+        w = 0.5 * wL - 0.5 * wS
+        port_log_ret = float(np.dot(w, r[t]))
+        values[t + 1] = values[t] * np.exp(port_log_ret)  # no trading, no cost
+
+    return values
+
+def simulate_ls_momentum(
+    returns: pd.DataFrame,
+    lookback: int = 60,
+    k_frac: float = 0.1,
+    rebalance_every: int = 21,
+    transaction_cost: float = 0.001,
+    initial_value: float = 1.0,
+    return_turnover: bool = False,
+):
+    """
+    Cross-sectional momentum long/short:
+    - score_i(t) = sum_{j=t-lookback..t-1} r_{j,i}  (log-return momentum)
+    - long top k%, short bottom k%
+    - rebalanced every `rebalance_every` steps
+    """
+    r = returns.values  # (T, N)
+    T, N = r.shape
+
+    values = np.empty(T + 1, dtype=np.float64)
+    values[0] = float(initial_value)
+    turnovers = np.zeros(T, dtype=np.float64)
+
+    # init: equal books
+    wL = np.ones(N, dtype=np.float64) / N
+    wS = np.ones(N, dtype=np.float64) / N
+
+    for t in range(T):
+        turnover = 0.0
+
+        if t >= lookback and (rebalance_every > 0) and (t % rebalance_every == 0) and (t != 0):
+            scores = r[t - lookback : t].sum(axis=0)  # (N,)
+            wL_new, wS_new = _ls_from_scores(scores, k_frac=k_frac)
+
+            turnover = float(np.sum(np.abs(wL_new - wL)) + np.sum(np.abs(wS_new - wS)))
+            wL, wS = wL_new, wS_new
+
+        turnovers[t] = turnover
+        cost = transaction_cost * turnover
+
+        w = 0.5 * wL - 0.5 * wS
+        port_log_ret = float(np.dot(w, r[t]))
+        values[t + 1] = values[t] * np.exp(port_log_ret - cost)
+
+    if return_turnover:
+        return values, turnovers
+    return values
 
 # -----------------------------
 # Portfolio simulators
@@ -207,12 +365,34 @@ if __name__ == "__main__":
 
     # --- Target weights ---
     _, N = returns_aligned.shape
-    target = np.ones(N) / N
+    target_long_only = np.ones(N) / N
 
-    # --- Baselines ---
+    # market-neutral equal books
+    target_long = np.ones(N) / N
+    target_short = np.ones(N) / N
+
+    # --- Long-only baselines (still useful) ---
     ew_bh_vals = simulate_buy_and_hold(
-        returns_aligned, init_weights=target, initial_value=1.0
+        returns_aligned, init_weights=target_long_only, initial_value=1.0
     )
+
+    ew_m_vals, ew_m_turnover = simulate_rebalance_strategy(
+        returns_aligned,
+        target_weights=target_long_only,
+        rebalance_every=21,
+        transaction_cost=tc,
+        initial_value=1.0,
+        return_turnover=True,
+    )
+
+    ls_ew_bh_vals = simulate_ls_buy_and_hold(
+        returns_aligned,
+        w_long_init=target_long,
+        w_short_init=target_short,
+        initial_value=1.0,
+    )
+
+    best_ticker, best_vals = compute_best_single_asset(returns_aligned)
 
     spy_vals = simulate_buy_and_hold(
         spy_aligned,
@@ -220,14 +400,21 @@ if __name__ == "__main__":
         initial_value=1.0,
     )
 
-    best_ticker, best_vals = compute_best_single_asset(returns_aligned)
-
-    
-    # Monthly rebalance
-
-    ew_m_vals, ew_m_turnover = simulate_rebalance_strategy(
+    # --- Market-neutral long/short baselines (coherent with your L/S env) ---
+    ls_ew_monthly_vals, ls_ew_monthly_to = simulate_ls_rebalance_strategy(
         returns_aligned,
-        target_weights=target,
+        w_long_target=target_long,
+        w_short_target=target_short,
+        rebalance_every=21,
+        transaction_cost=tc,
+        initial_value=1.0,
+        return_turnover=True,
+    )
+
+    ls_mom_vals, ls_mom_to = simulate_ls_momentum(
+        returns_aligned,
+        lookback=60,
+        k_frac=0.1,
         rebalance_every=21,
         transaction_cost=tc,
         initial_value=1.0,
@@ -245,20 +432,26 @@ if __name__ == "__main__":
     # --- Plot ---
     plot_baselines(
         {
-            "EW Buy & Hold (true)": ew_bh_vals,
-            "EW Monthly Rebalance": ew_m_vals,
+            "EW Buy & Hold (long-only)": ew_bh_vals,
+            "EW Monthly Rebalance (long-only)": ew_m_vals,
             "SPY Buy & Hold": spy_vals,
             f"Best Single ({best_ticker})": best_vals,
+            "LS Equal-Weight Monthly (MN)": ls_ew_monthly_vals,
+            "LS Momentum 60d (MN)": ls_mom_vals,
+            "LS EW Buy&Hold (MN)": ls_ew_bh_vals,
         },
-        title="Baseline Portfolio Value Curves (S&P 500 Universe)",
+        title="Baseline Portfolio Value Curves (SP500 Universe)",
     )
 
     # Build metric summaries
     metrics = {
-        "EW Buy&Hold (true)": summary_metrics(ew_bh_vals),
-        "EW Monthly Rebal": summary_metrics(ew_m_vals, turnover=ew_m_turnover),
+        "EW Buy&Hold (LO)": summary_metrics(ew_bh_vals),
+        "EW Monthly (LO)": summary_metrics(ew_m_vals, turnover=ew_m_turnover),
         "SPY Buy&Hold": summary_metrics(spy_vals),
         f"Best Single ({best_ticker})": summary_metrics(best_vals),
+        "LS EW Monthly (MN)": summary_metrics(ls_ew_monthly_vals, turnover=ls_ew_monthly_to),
+        "LS Mom 60d (MN)": summary_metrics(ls_mom_vals, turnover=ls_mom_to),
+        "LS EW Buy&Hold (MN)": summary_metrics(ls_ew_bh_vals),
     }
 
     print("\n=== Metrics (annualized, 252 trading days) ===")
