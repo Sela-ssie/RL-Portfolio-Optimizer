@@ -51,9 +51,20 @@ def max_drawdown(values: np.ndarray) -> float:
     if len(values) < 2:
         return np.nan
     peak = np.maximum.accumulate(values)
-    dd = values / (peak + 1e-12) - 1.0
-    return float(dd.min())
+    dd = 1.0 - (values / (peak + 1e-12))   # drawdown as positive fraction
+    return float(dd.max())
 
+def sortino_ratio(log_returns: np.ndarray, periods_per_year: int = TRADING_DAYS) -> float:
+    log_returns = np.asarray(log_returns, dtype=np.float64)
+    if len(log_returns) < 2:
+        return np.nan
+    downside = log_returns[log_returns < 0]
+    if len(downside) < 2:
+        return np.nan
+    denom = downside.std(ddof=1)
+    if denom < 1e-12:
+        return np.nan
+    return log_returns.mean() / denom * np.sqrt(periods_per_year)
 
 def summary_metrics(values: np.ndarray, turnover: np.ndarray | None = None) -> dict:
     lr = value_path_to_log_returns(values)
@@ -70,13 +81,15 @@ def summary_metrics(values: np.ndarray, turnover: np.ndarray | None = None) -> d
     else:
         out["avg_turnover"] = 0.0
         out["max_turnover"] = 0.0
+    out["sortino"] = sortino_ratio(lr)
+    out["calmar"] = out["ann_return"] / (out["max_dd"] + 1e-12) if (np.isfinite(out["ann_return"]) and np.isfinite(out["max_dd"])) else np.nan
     return out
 
 
 def print_metrics_table(results: dict[str, dict]):
     # Simple aligned printing (no external deps)
-    headers = ["Strategy", "Final", "AnnRet", "AnnVol", "Sharpe", "MaxDD", "AvgTO"]
-    colw = [max(len(headers[0]), 18), 10, 10, 10, 10, 10, 10]
+    headers = ["Strategy", "Final", "AnnRet", "AnnVol", "Sharpe", "MaxDD", "AvgTO(gross)", "Sortino", "Calmar"]
+    colw = [max(len(headers[0]), 18), 10, 10, 10, 10, 10, 14, 10, 10]
 
     def fmt(x):
         if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
@@ -91,6 +104,8 @@ def print_metrics_table(results: dict[str, dict]):
         f"{headers[4]:>{colw[4]}}"
         f"{headers[5]:>{colw[5]}}"
         f"{headers[6]:>{colw[6]}}"
+        f"{headers[7]:>{colw[7]}}"
+        f"{headers[8]:>{colw[8]}}"
     )
     print(line)
     print("-" * sum(colw))
@@ -104,4 +119,6 @@ def print_metrics_table(results: dict[str, dict]):
             f"{fmt(m['sharpe']):>{colw[4]}}"
             f"{fmt(m['max_dd']):>{colw[5]}}"
             f"{fmt(m['avg_turnover']):>{colw[6]}}"
+            f"{fmt(m.get('sortino', np.nan)):>{colw[7]}}"
+            f"{fmt(m.get('calmar', np.nan)):>{colw[8]}}"
         )
