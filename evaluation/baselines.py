@@ -309,6 +309,31 @@ def compute_best_single_asset(returns: pd.DataFrame):
     return best_ticker, best_values
 
 
+def equal_weight_market_neutral(N: int):
+    w_long = np.ones(N) / N
+    w_short = np.ones(N) / N
+    return np.concatenate([w_long, w_short]).astype(np.float32)
+
+def momentum_ls_action(obs_vec: np.ndarray, N: int, lookback: int, F: int, k: int = 5):
+    # obs_vec = [window_flat, weights]
+    window_flat = obs_vec[:lookback * N * F]
+    if F == 1:
+        window = window_flat.reshape(lookback, N)
+        r = window[-1]                 # last normalized return
+        mom = window.sum(axis=0)       # lookback momentum proxy
+    else:
+        window = window_flat.reshape(lookback, N, F)
+        r = window[-1, :, 0]           # feature 0 = return
+        mom = window[:, :, 1].mean(axis=0) if F > 1 else r
+
+    rank = np.argsort(mom)
+    short_idx = rank[:k]
+    long_idx = rank[-k:]
+
+    a_long = np.zeros(N); a_short = np.zeros(N)
+    a_long[long_idx] = 1.0 / k
+    a_short[short_idx] = 1.0 / k
+    return np.concatenate([a_long, a_short]).astype(np.float32)
 
 
 def plot_baselines(curves: dict[str, np.ndarray], title: str):
