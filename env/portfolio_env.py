@@ -178,9 +178,6 @@ class PortfolioEnv(gym.Env):
             steps_taken = self.t - self.start_t
             done = (steps_taken >= self.episode_length) or (self.t >= (len(self.returns_raw) - 1))
 
-        if done and self.t > (len(self.obs) - 1):
-            self.t = len(self.obs) - 1
-
         info = {
             "portfolio_value": float(self.portfolio_value),
             "weights": self.weights.copy(),

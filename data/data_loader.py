@@ -2,12 +2,10 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
+from functools import lru_cache
 
 
 def load_price_data(tickers, start="2015-01-01", end="2024-01-01"):
-    """
-    Load adjusted close prices for a list of tickers.
-    """
     data = yf.download(
         tickers,
         start=start,
@@ -16,20 +14,22 @@ def load_price_data(tickers, start="2015-01-01", end="2024-01-01"):
         progress=False,
     )
 
-    prices = data["Close"]
+    prices = data.get("Close")
+    if prices is None or getattr(prices, "empty", True):
+        raise ValueError(f"yfinance returned no Close prices for tickers={tickers}")
+
     if isinstance(prices, pd.Series):
-        prices = prices.to_frame(name=tickers[0])
-    return prices
+        # single ticker case
+        t0 = tickers[0] if isinstance(tickers, (list, tuple)) else str(tickers)
+        prices = prices.to_frame(name=t0)
+
+    return prices.sort_index()
 
 
-def prices_to_log_returns(prices: pd.DataFrame):
-    """
-    Convert price series to log returns.
-    """
+def prices_to_log_returns(prices: pd.DataFrame) -> pd.DataFrame:
+    prices = prices.sort_index()
     log_returns = np.log(prices / prices.shift(1))
-    log_returns = log_returns.dropna()
-
-    return log_returns
+    return log_returns.dropna().astype(np.float64)
 
 def train_test_split(returns, train_ratio=0.7):
     split = int(len(returns) * train_ratio)
@@ -58,6 +58,7 @@ def prepare_data(tickers, start="2015-01-01", end="2024-01-01", train_ratio=0.7)
 
     return train_returns, test_returns, mean, std
 
+@lru_cache(maxsize=1)
 def get_sp500_tickers() -> list[str]:
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     headers = {
@@ -86,13 +87,11 @@ def load_price_data_batched(
     end="2024-01-01",
     batch_size: int = 80,
 ):
-    """
-    Download adjusted close prices in batches to reduce Yahoo failures.
-    Returns a DataFrame: index=Date, columns=tickers.
-    """
     all_prices = []
+
     for i in range(0, len(tickers), batch_size):
-        batch = tickers[i:i + batch_size]
+        batch = tickers[i : i + batch_size]
+
         data = yf.download(
             batch,
             start=start,
@@ -101,11 +100,20 @@ def load_price_data_batched(
             progress=False,
             threads=True,
         )
-        prices = data["Close"]
+
+        prices = data.get("Close")
+        # Skip bad batches instead of killing the whole SP500 run
+        if prices is None or getattr(prices, "empty", True):
+            continue
+
         if isinstance(prices, pd.Series):
-            prices = prices.to_frame(name=tickers[0])
+            prices = prices.to_frame(name=batch[0])
+
         all_prices.append(prices)
 
+    if len(all_prices) == 0:
+        raise ValueError("All Yahoo batches failed — no Close price data loaded.")
+
     prices = pd.concat(all_prices, axis=1)
-    prices = prices.loc[:, ~prices.columns.duplicated()]  # just in case
-    return prices
+    prices = prices.loc[:, ~prices.columns.duplicated()]
+    return prices.sort_index()
