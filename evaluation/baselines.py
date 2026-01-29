@@ -308,6 +308,10 @@ def compute_best_single_asset(returns: pd.DataFrame):
 
     return best_ticker, best_values
 
+def ew_long_short_cash(N: int, cash_idx: int):
+    a_long = np.ones(N) / N
+    a_short = np.zeros(N); a_short[cash_idx] = 1.0
+    return np.concatenate([a_long, a_short]).astype(np.float32)
 
 def equal_weight_market_neutral(N: int):
     w_long = np.ones(N) / N
@@ -316,6 +320,7 @@ def equal_weight_market_neutral(N: int):
 
 def momentum_ls_action(obs_vec: np.ndarray, N: int, lookback: int, F: int, k: int = 5):
     # obs_vec = [window_flat, weights]
+    k = max(1, N // 2)
     window_flat = obs_vec[:lookback * N * F]
     if F == 1:
         window = window_flat.reshape(lookback, N)

@@ -16,6 +16,7 @@ from torch.distributions import Dirichlet
 
 from data.data_loader import load_price_data, prices_to_log_returns, get_sp500_tickers, load_price_data_batched
 from env.portfolio_env import PortfolioEnv
+from evaluation.baselines import momentum_ls_action, equal_weight_market_neutral
 from evaluation.metrics import summary_metrics, print_metrics_table
 
 
@@ -308,33 +309,34 @@ def ppo_update(model: ActorCritic, optimizer: torch.optim.Optimizer, batch, devi
 
 
 @torch.no_grad()
-def evaluate_policy(env: PortfolioEnv, model: ActorCritic, device: torch.device):
+def evaluate_policy(env, model, device, policy="ppo"):
     obs, _ = env.reset()
     done = False
-
     values = [float(env.portfolio_value)]
     turnovers = []
 
+    N = env.num_assets
+    F = getattr(env, "num_features", 1)
+    lookback = env.lookback_window_size
+
     while not done:
-        obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-        action = model.act_deterministic(obs_t).squeeze(0).cpu().numpy().astype(np.float32)
+        if policy == "ppo":
+            obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            action = model.act_deterministic(obs_t).squeeze(0).cpu().numpy().astype(np.float32)
+        elif policy == "ew":
+            action = equal_weight_market_neutral(N)
+        elif policy == "mom":
+            action = momentum_ls_action(obs, N=N, lookback=lookback, F=F, k=min(5, N))
+        else:
+            raise ValueError("unknown policy")
 
         obs, reward, done, truncated, info = env.step(action)
         done = done or truncated
 
-        if isinstance(info, dict):
-            if "portfolio_value" in info:
-                values.append(float(info["portfolio_value"]))
-            if "turnover" in info:
-                turnovers.append(float(info["turnover"]))
+        if "portfolio_value" in info: values.append(float(info["portfolio_value"]))
+        if "turnover" in info: turnovers.append(float(info["turnover"]))
 
-        # safety
-        if len(values) > 5_000_000:
-            raise RuntimeError("Evaluation episode too long.")
-
-    values = np.asarray(values, dtype=np.float64)
-    turnovers = np.asarray(turnovers, dtype=np.float64) if len(turnovers) else None
-    return values, turnovers
+    return np.asarray(values, dtype=np.float64), (np.asarray(turnovers) if turnovers else None)
 
 
 if __name__ == "__main__":
@@ -525,10 +527,14 @@ if __name__ == "__main__":
 
     # Final evaluation (test)
     test_vals, test_to = evaluate_policy(test_env, model, device)
+    ew_vals, ew_to = evaluate_policy(test_env, model, device, policy="ew")
+    mom_vals, mom_to = evaluate_policy(test_env, model, device, policy="mom")
 
     results = {
+        "EW (test)": summary_metrics(ew_vals, turnover=ew_to),
+        "MOM (test)": summary_metrics(mom_vals, turnover=mom_to),
         "PPO (train)": summary_metrics(*evaluate_policy(train_env, model, device)),
-        "PPO (test)": summary_metrics(test_vals, turnover=test_to),
+        "PPO (test)": summary_metrics(*evaluate_policy(test_env, model, device, policy="ppo")),
     }
 
     print("\n=== PPO Results ===")
